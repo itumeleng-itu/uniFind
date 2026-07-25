@@ -1,9 +1,4 @@
-// Structurally compatible with both `pg`'s Pool/Client and PGlite, so the
-// same logic runs against production Postgres and the in-memory test
-// database without an adapter.
-export interface DbClient {
-  query<T = unknown>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
-}
+import type { DbClient } from "@/lib/dbClient";
 
 export interface VerifiedTransaction {
   status: string;
