@@ -16,6 +16,7 @@ export interface AssembledStudent {
 
 export interface AssembledProgramme {
   id: string;
+  institutionId: string;
   institutionName: string;
   scoringSystem: string;
   faculty: string;
@@ -45,25 +46,40 @@ export interface AssembledInput {
 
 interface ProgrammeRow {
   id: string;
+  institution_id: string;
   institution_name: string;
   scoring_system: string;
   faculty: string;
   name: string;
   qualification: string;
   points_requirement: number;
-  effective_deadline: string | null;
+  // Actually a Date object (or null) at runtime -- see toDateString.
+  effective_deadline: unknown;
+}
+
+// Both `pg` and PGlite return `date` columns as native JS Date objects, not
+// strings -- despite ProgrammeRow/AssembledBursary declaring them as
+// `string | null`. Normalize at this boundary so every downstream consumer
+// (sorting, JSON serialization in the prompt) can trust the declared type
+// instead of each one having to defend against the driver's actual runtime
+// shape.
+function toDateString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value);
 }
 
 function toProgramme(row: ProgrammeRow): AssembledProgramme {
   return {
     id: row.id,
+    institutionId: row.institution_id,
     institutionName: row.institution_name,
     scoringSystem: row.scoring_system,
     faculty: row.faculty,
     name: row.name,
     qualification: row.qualification,
     pointsRequirement: row.points_requirement,
-    effectiveDeadline: row.effective_deadline,
+    effectiveDeadline: toDateString(row.effective_deadline),
   };
 }
 
@@ -136,7 +152,7 @@ export async function assembleInput(db: DbClient, matchRunId: string): Promise<A
   const subjects = parseSubjects(student.subjects);
 
   const { rows: openRows } = await db.query<ProgrammeRow>(
-    `select op.id, i.name as institution_name, op.scoring_system, op.faculty,
+    `select op.id, op.institution_id, i.name as institution_name, op.scoring_system, op.faculty,
             op.name, op.qualification, op.points_requirement, op.effective_deadline
      from open_programmes op
      join institutions i on i.id = op.institution_id
@@ -148,7 +164,7 @@ export async function assembleInput(db: DbClient, matchRunId: string): Promise<A
   // to. open_programmes already excludes these from openRows, so this is a
   // separate query rather than a filter on the same result set.
   const { rows: closedRows } = await db.query<ProgrammeRow>(
-    `select p.id, i.name as institution_name, i.scoring_system, p.faculty,
+    `select p.id, p.institution_id, i.name as institution_name, i.scoring_system, p.faculty,
             p.name, p.qualification, p.points_requirement,
             coalesce(fd.deadline, i.application_deadline) as effective_deadline
      from programmes p
@@ -198,7 +214,8 @@ export async function assembleInput(db: DbClient, matchRunId: string): Promise<A
     url: string;
     eligibility_criteria: string | null;
     amount: string | null;
-    closing_date: string | null;
+    // Actually a Date object (or null) at runtime -- see toDateString.
+    closing_date: unknown;
   }>(
     `select id, name, provider, url, eligibility_criteria, amount, closing_date
      from bursaries
@@ -224,7 +241,7 @@ export async function assembleInput(db: DbClient, matchRunId: string): Promise<A
       url: b.url,
       eligibilityCriteria: b.eligibility_criteria,
       amount: b.amount,
-      closingDate: b.closing_date,
+      closingDate: toDateString(b.closing_date),
     })),
   };
 }
@@ -236,12 +253,41 @@ export interface GenerateTextResult {
   completionTokens: number;
 }
 
+// An institution counts as fresh if any of its programmes were verified
+// within this window -- course-sync (nightly, or on-demand here) is what
+// actually moves that timestamp forward.
+const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+async function staleInstitutionIds(db: DbClient, institutionIds: string[]): Promise<string[]> {
+  if (institutionIds.length === 0) return [];
+  const { rows } = await db.query<{ id: string }>(
+    `select i.id
+     from institutions i
+     where i.id = any($1)
+       and not exists (
+         select 1 from programmes p
+         where p.institution_id = i.id
+           and p.last_verified_at is not null
+           and p.last_verified_at >= now() - interval '${STALE_AFTER_MS} milliseconds'
+       )`,
+    [institutionIds],
+  );
+  return rows.map((r) => r.id);
+}
+
 export interface GenerateReportDeps {
   db: DbClient;
   generate: (
     prompt: string,
     opts: { source: string; reportId: string },
   ) => Promise<GenerateTextResult>;
+  // Optional: when provided, generateReport refreshes any institution the
+  // learner actually matches against (qualifies-for or narrowly-missed)
+  // that hasn't been verified recently, via course-sync's normal
+  // decide()/threshold pipeline, before writing the prompt. Omit it (as
+  // existing callers do) to keep today's behavior -- one assembleInput
+  // call against whatever the catalogue already has.
+  refreshInstitutions?: (institutionIds: string[]) => Promise<void>;
 }
 
 // Claims the report row with a conditional UPDATE before doing any work: the
@@ -259,7 +305,23 @@ export async function generateReport(deps: GenerateReportDeps, reportId: string)
   if (!claimed) return;
 
   try {
-    const input = await assembleInput(deps.db, claimed.match_run_id);
+    let input = await assembleInput(deps.db, claimed.match_run_id);
+
+    if (deps.refreshInstitutions) {
+      const candidateIds = [
+        ...new Set([...input.qualifiesFor, ...input.narrowlyMissed].map((p) => p.institutionId)),
+      ];
+      const staleIds = await staleInstitutionIds(deps.db, candidateIds);
+      if (staleIds.length > 0) {
+        // Refreshed institutions still only affect this report through the
+        // normal agent pipeline: a high-confidence update applies and is
+        // reflected in the re-read below; a low-confidence one escalates
+        // and the report falls back to whatever was already verified.
+        await deps.refreshInstitutions(staleIds);
+        input = await assembleInput(deps.db, claimed.match_run_id);
+      }
+    }
+
     const promptText = buildReportPrompt(input);
     const result = await deps.generate(promptText, { source: "report_generation", reportId });
 

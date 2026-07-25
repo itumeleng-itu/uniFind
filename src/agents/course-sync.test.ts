@@ -10,12 +10,15 @@ async function createTestDb(): Promise<PGlite> {
   return db;
 }
 
+let seedCounter = 0;
+
 async function seedInstitution(db: PGlite, prospectusUrl: string | null) {
+  seedCounter += 1;
   const { rows } = await db.query<{ id: string }>(
     `insert into institutions (name, slug, homepage_url, prospectus_url)
-     values ('Test University', 'test-university', 'https://test.ac.za', $1)
+     values ('Test University', $2, 'https://test.ac.za', $1)
      returning id`,
-    [prospectusUrl],
+    [prospectusUrl, `test-university-${seedCounter}`],
   );
   return rows[0].id;
 }
@@ -242,5 +245,48 @@ describe("phase 6: course-sync", () => {
       [institutionId],
     );
     expect(rows[0].prospectus_url).toBeNull();
+  });
+
+  it("with institutionIds, syncs only the named institutions", async () => {
+    const institutionA = await seedInstitution(db, "https://a.test/prospectus");
+    await seedInstitution(db, "https://b.test/prospectus");
+    let extractCallCount = 0;
+
+    const deps: CourseSyncDeps = {
+      db,
+      discoverProspectusUrl: async () => {
+        throw new Error("unused -- prospectus_url already set");
+      },
+      extractProgrammes: async () => {
+        extractCallCount += 1;
+        return [];
+      },
+    };
+
+    await runCourseSync(deps, [institutionA]);
+
+    // Two institutions exist, but only the one named in institutionIds
+    // should have been crawled.
+    expect(extractCallCount).toBe(1);
+  });
+
+  it("with an empty institutionIds array, syncs nothing", async () => {
+    await seedInstitution(db, "https://a.test/prospectus");
+    let extractCalled = false;
+
+    const deps: CourseSyncDeps = {
+      db,
+      discoverProspectusUrl: async () => {
+        throw new Error("unused");
+      },
+      extractProgrammes: async () => {
+        extractCalled = true;
+        return [];
+      },
+    };
+
+    await runCourseSync(deps, []);
+
+    expect(extractCalled).toBe(false);
   });
 });

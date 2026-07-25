@@ -11,6 +11,7 @@ async function createTestDb(): Promise<PGlite> {
 }
 
 interface Seeded {
+  institutionId: string;
   matchRunId: string;
   verifiedOpenProgrammeId: string;
   unverifiedProgrammeId: string;
@@ -64,6 +65,7 @@ async function seed(db: PGlite): Promise<Seeded> {
   );
 
   return {
+    institutionId,
     matchRunId: matchRunRows[0].id,
     verifiedOpenProgrammeId: verifiedProgRows[0].id,
     unverifiedProgrammeId: unverifiedProgRows[0].id,
@@ -200,5 +202,86 @@ describe("phase 5: generateReport claiming", () => {
     expect(rows[0].prompt_tokens).toBe(123);
     expect(rows[0].completion_tokens).toBe(45);
     expect(rows[0].input_snapshot).toBeTruthy();
+  });
+});
+
+describe("phase: on-demand institution refresh", () => {
+  let db: PGlite;
+  let seeded: Seeded;
+  let reportId: string;
+
+  beforeEach(async () => {
+    db = await createTestDb();
+    seeded = await seed(db);
+
+    const { rows: paymentRows } = await db.query<{ id: string }>(
+      `insert into payments (match_run_id, provider, reference, status, amount_cents, currency)
+       values ($1, 'paystack', 'ref_refresh_test', 'paid', 7900, 'ZAR')
+       returning id`,
+      [seeded.matchRunId],
+    );
+    const { rows: reportRows } = await db.query<{ id: string }>(
+      `insert into reports (payment_id, match_run_id, status)
+       values ($1, $2, 'pending')
+       returning id`,
+      [paymentRows[0].id, seeded.matchRunId],
+    );
+    reportId = reportRows[0].id;
+  });
+
+  const generate = async () => ({
+    text: "# Report",
+    modelName: "gemini-2.5-flash",
+    promptTokens: 1,
+    completionTokens: 1,
+  });
+
+  it("refreshes a matched institution with no verified programme yet, and the report reflects the result", async () => {
+    // The seeded programme has never been through course-sync
+    // (last_verified_at is null), so it's stale by definition -- and it
+    // already qualifies, so its institution is a candidate.
+    let refreshedWith: string[] | null = null;
+    const refreshInstitutions = async (institutionIds: string[]) => {
+      refreshedWith = institutionIds;
+      await db.query(
+        `insert into programmes (institution_id, faculty, name, qualification, points_requirement, status, last_verified_at)
+         values ($1, 'Science', 'BSc Data Science', 'BSc', 29, 'verified', now())`,
+        [seeded.institutionId],
+      );
+    };
+
+    await generateReport({ db, generate, refreshInstitutions }, reportId);
+
+    expect(refreshedWith).toEqual([seeded.institutionId]);
+
+    const { rows } = await db.query<{ input_snapshot: { qualifiesFor: { name: string }[] } }>(
+      `select input_snapshot from reports where id = $1`,
+      [reportId],
+    );
+    const names = rows[0].input_snapshot.qualifiesFor.map((p) => p.name);
+    expect(names).toContain("BSc Data Science");
+  });
+
+  it("does not refresh an institution whose programme was verified recently", async () => {
+    await db.query(`update programmes set last_verified_at = now() where id = $1`, [
+      seeded.verifiedOpenProgrammeId,
+    ]);
+
+    let called = false;
+    const refreshInstitutions = async () => {
+      called = true;
+    };
+
+    await generateReport({ db, generate, refreshInstitutions }, reportId);
+
+    expect(called).toBe(false);
+  });
+
+  it("behaves exactly as before when refreshInstitutions is not provided", async () => {
+    await generateReport({ db, generate }, reportId);
+    const { rows } = await db.query<{ status: string }>(`select status from reports where id = $1`, [
+      reportId,
+    ]);
+    expect(rows[0].status).toBe("completed");
   });
 });

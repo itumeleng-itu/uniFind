@@ -198,14 +198,31 @@ async function syncInstitution(
   }
 }
 
-export async function runCourseSync(deps: CourseSyncDeps): Promise<void> {
+// With no institutionIds, syncs the whole catalogue (the nightly scheduled
+// run). With institutionIds, syncs only those -- used for an on-demand
+// refresh of the specific institutions a learner matches against, still
+// through the exact same decide()/threshold pipeline as the full run.
+export async function runCourseSync(deps: CourseSyncDeps, institutionIds?: string[]): Promise<void> {
   await runAgent({ db: deps.db }, "course-sync", async (run) => {
-    const { rows: institutions } = await deps.db.query<InstitutionRow>(
-      `select id, name, homepage_url, prospectus_url from institutions`,
-    );
+    // institutionIds === undefined means "all"; institutionIds === []
+    // means "none" -- these are different requests, not the same one.
+    if (institutionIds && institutionIds.length === 0) {
+      return "refreshed 0 institutions on demand (nothing stale)";
+    }
+    const { rows: institutions } =
+      institutionIds === undefined
+        ? await deps.db.query<InstitutionRow>(
+            `select id, name, homepage_url, prospectus_url from institutions`,
+          )
+        : await deps.db.query<InstitutionRow>(
+            `select id, name, homepage_url, prospectus_url from institutions where id = any($1)`,
+            [institutionIds],
+          );
     for (const institution of institutions) {
       await syncInstitution(run, deps, institution);
     }
-    return `synced ${institutions.length} institutions`;
+    return institutionIds
+      ? `refreshed ${institutions.length} institution(s) on demand`
+      : `synced ${institutions.length} institutions`;
   });
 }

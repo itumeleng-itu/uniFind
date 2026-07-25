@@ -79,7 +79,23 @@ async function main(): Promise<void> {
       await runSupport({
         db: getPool(),
         triageTicket: triageTicketViaGemini,
-        generateReport: (reportId) => generateReport({ db: getPool(), generate }, reportId),
+        generateReport: (reportId) =>
+          generateReport(
+            {
+              db: getPool(),
+              generate,
+              refreshInstitutions: (institutionIds) =>
+                runCourseSync(
+                  {
+                    db: getPool(),
+                    discoverProspectusUrl: discoverProspectusUrlViaGemini,
+                    extractProgrammes: extractProgrammesViaGemini,
+                  },
+                  institutionIds,
+                ),
+            },
+            reportId,
+          ),
         refundTransaction,
       });
       return;
