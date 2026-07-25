@@ -1,4 +1,4 @@
-import { pool } from "@/lib/db";
+import { getPool } from "@/lib/db";
 import { refundTransaction } from "@/lib/paystack";
 import { generateJson, generate } from "@/lib/vertex";
 import { generateReport } from "@/reports/generate";
@@ -67,19 +67,19 @@ async function main(): Promise<void> {
   switch (agentName) {
     case "course-sync":
       await runCourseSync({
-        db: pool,
+        db: getPool(),
         discoverProspectusUrl: discoverProspectusUrlViaGemini,
         extractProgrammes: extractProgrammesViaGemini,
       });
       return;
     case "bursary-verify":
-      await runBursaryVerify({ db: pool, checkBursaryPage: checkBursaryPageViaGemini });
+      await runBursaryVerify({ db: getPool(), checkBursaryPage: checkBursaryPageViaGemini });
       return;
     case "support":
       await runSupport({
-        db: pool,
+        db: getPool(),
         triageTicket: triageTicketViaGemini,
-        generateReport: (reportId) => generateReport({ db: pool, generate }, reportId),
+        generateReport: (reportId) => generateReport({ db: getPool(), generate }, reportId),
         refundTransaction,
       });
       return;
@@ -98,5 +98,5 @@ main()
     process.exitCode = 1;
   })
   .finally(() => {
-    void pool.end();
+    void getPool().end();
   });

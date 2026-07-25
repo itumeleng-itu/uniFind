@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { env } from "./env";
-import { pool } from "./db";
+import { getPool } from "./db";
 
 const client = new GoogleGenAI({
   vertexai: true,
@@ -55,7 +55,7 @@ async function logCost(
   reportId: string | undefined,
 ): Promise<void> {
   try {
-    await pool.query(
+    await getPool().query(
       `insert into cost_events
          (report_id, source, model_name, prompt_tokens, completion_tokens, cost_usd)
        values ($1, $2, $3, $4, $5, $6)`,

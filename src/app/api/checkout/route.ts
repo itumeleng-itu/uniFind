@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { pool } from "@/lib/db";
+import { getPool } from "@/lib/db";
 import { env } from "@/lib/env";
 import { initializeTransaction } from "@/lib/paystack";
 
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // The learner's email comes from the match_run's student record, not from
   // the request -- trusting a client-supplied email here would let anyone
   // send a report link to an address that isn't theirs.
-  const { rows } = await pool.query<MatchRunWithEmail>(
+  const { rows } = await getPool().query<MatchRunWithEmail>(
     `select mr.id, s.email
      from match_runs mr
      join students s on s.id = mr.student_id
@@ -40,7 +40,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // Insert the pending payment row before redirecting to Paystack: if the
   // learner abandons checkout, we still have a record; if they complete it,
   // the webhook has a row to find by (provider, reference).
-  await pool.query(
+  await getPool().query(
     `insert into payments (match_run_id, provider, reference, status, amount_cents, currency)
      values ($1, 'paystack', $2, 'pending', $3, 'ZAR')`,
     [matchRun.id, reference, REPORT_PRICE_CENTS],

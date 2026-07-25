@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { pool } from "@/lib/db";
+import { getPool } from "@/lib/db";
 import { verifyTransaction, verifyWebhookSignature } from "@/lib/paystack";
 import { processPaystackWebhookReference } from "@/payments/webhook";
 
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // API error) throws here and Next returns 500, which is what we want:
   // Paystack retries on any non-2xx, and retries are safe because of the
   // on-conflict-do-nothing in processPaystackWebhookReference.
-  await processPaystackWebhookReference({ db: pool, verifyTransaction }, reference);
+  await processPaystackWebhookReference({ db: getPool(), verifyTransaction }, reference);
 
   return NextResponse.json({ received: true });
 }
