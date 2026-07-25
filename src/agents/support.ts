@@ -48,9 +48,10 @@ async function applySupportAction(
     const reference = rows[0]?.reference;
     if (!reference) return;
     await deps.refundTransaction(reference, amountCents);
-    await deps.db.query(`update payments set status = 'refunded', updated_at = now() where id = $1`, [
-      ticket.payment_id,
-    ]);
+    await deps.db.query(
+      `update payments set status = 'refunded', refunded_at = now(), updated_at = now() where id = $1`,
+      [ticket.payment_id],
+    );
     return;
   }
 

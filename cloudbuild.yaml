@@ -1,0 +1,94 @@
+# Builds the single image that serves both the Cloud Run web service and
+# every Cloud Run Job (course-sync, bursary-verify, support), then deploys
+# all four. Cloud Scheduler triggers for the jobs are provisioned once via
+# `gcloud scheduler jobs create` -- infra setup, not part of every build.
+substitutions:
+  _REGION: us-central1
+  _REPO: unifind
+  _SERVICE: unifind-web
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/unifind:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/unifind:latest
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/unifind
+
+  # Web service. Real secrets come from Secret Manager at deploy time, never
+  # from this file.
+  - id: deploy-web
+    name: gcr.io/google-cloud-sdk/slim
+    args:
+      - gcloud
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/unifind:$SHORT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --set-secrets=DATABASE_URL=database-url:latest,PAYSTACK_SECRET_KEY=paystack-secret-key:latest
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=${_REGION}
+
+  # Same image, three jobs, one AGENT value each -- see src/agents/runner.ts.
+  - id: deploy-job-course-sync
+    name: gcr.io/google-cloud-sdk/slim
+    args:
+      - gcloud
+      - run
+      - jobs
+      - deploy
+      - unifind-course-sync
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/unifind:$SHORT_SHA
+      - --region=${_REGION}
+      - --command=npx
+      - --args=tsx,src/agents/runner.ts
+      - --set-secrets=DATABASE_URL=database-url:latest
+      - --set-env-vars=AGENT=course-sync,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=${_REGION}
+
+  - id: deploy-job-bursary-verify
+    name: gcr.io/google-cloud-sdk/slim
+    args:
+      - gcloud
+      - run
+      - jobs
+      - deploy
+      - unifind-bursary-verify
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/unifind:$SHORT_SHA
+      - --region=${_REGION}
+      - --command=npx
+      - --args=tsx,src/agents/runner.ts
+      - --set-secrets=DATABASE_URL=database-url:latest
+      - --set-env-vars=AGENT=bursary-verify,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=${_REGION}
+
+  - id: deploy-job-support
+    name: gcr.io/google-cloud-sdk/slim
+    args:
+      - gcloud
+      - run
+      - jobs
+      - deploy
+      - unifind-support
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/unifind:$SHORT_SHA
+      - --region=${_REGION}
+      - --command=npx
+      - --args=tsx,src/agents/runner.ts
+      - --set-secrets=DATABASE_URL=database-url:latest,PAYSTACK_SECRET_KEY=paystack-secret-key:latest
+      - --set-env-vars=AGENT=support,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=${_REGION}
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/unifind:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/unifind:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY

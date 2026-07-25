@@ -41,7 +41,8 @@ export async function processPaystackWebhookReference(
   if (verified.status !== "success") return;
 
   await deps.db.query(
-    `update payments set status = 'paid', updated_at = now() where id = $1 and status <> 'paid'`,
+    `update payments set status = 'paid', paid_at = now(), updated_at = now()
+     where id = $1 and status <> 'paid'`,
     [payment.id],
   );
 
